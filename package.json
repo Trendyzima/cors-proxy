@@ -1,4 +1,6 @@
 {
+  "name": "cors-proxy",
+  "version": "1.1.0",
   "scripts": {
     "dev": "wrangler dev src/index.ts",
     "deploy": "wrangler deploy --minify src/index.ts"
@@ -8,6 +10,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240403.0",
+    "typescript": "^5.9.3",
     "wrangler": "^3.47.0"
   }
 }
