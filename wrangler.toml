@@ -1,21 +1,7 @@
-name = "cors-proxy"
-compatibility_date = "2023-12-01"
+name = "testagram-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-09-13"
 
-# [vars]
-# MY_VAR = "my-variable"
-
-# [[kv_namespaces]]
-# binding = "MY_KV_NAMESPACE"
-# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
-# [[r2_buckets]]
-# binding = "MY_BUCKET"
-# bucket_name = "my-bucket"
-
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "my-database"
-# database_id = ""
-
-# [ai]
-# binding = "AI"
+[vars]
+SUPABASE_GATEWAY_URL = "https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay"
+ALLOWED_ORIGINS = "https://testagram.site,https://www.testagram.site"
