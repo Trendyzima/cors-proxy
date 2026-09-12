@@ -1,103 +1,117 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
-const app = new Hono()
-
-app.use('*', cors())
-
-const BLOCKED_HOSTNAMES = new Set([
-  'localhost',
-  '127.0.0.1',
-  '0.0.0.0',
-  '[::1]',
-  'metadata.google.internal',
-])
-
-const isPrivateIP = (hostname: string): boolean => {
-  if (BLOCKED_HOSTNAMES.has(hostname)) return true
-
-  const parts = hostname.split('.').map(Number)
-  if (parts.length !== 4 || parts.some(isNaN)) return false
-
-  // 10.0.0.0/8
-  if (parts[0] === 10) return true
-  // 172.16.0.0/12
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true
-  // 192.168.0.0/16
-  if (parts[0] === 192 && parts[1] === 168) return true
-  // 169.254.0.0/16 (link-local / cloud metadata)
-  if (parts[0] === 169 && parts[1] === 254) return true
-  // 0.0.0.0/8
-  if (parts[0] === 0) return true
-
-  return false
+interface Env {
+  SUPABASE_GATEWAY_URL?: string
+  ALLOWED_ORIGINS?: string
+  GATEWAY_SHARED_SECRET?: string
 }
 
-const constructUrl = (path: string): string | null => {
-  if (!path) return null
+const DEFAULT_GATEWAY_URL =
+  'https://aepbqfrmheihfsauzcby.supabase.co/functions/v1/gateway-relay'
 
-  const raw = path.startsWith('http://') || path.startsWith('https://')
-    ? path
-    : `https://${path}`
+const app = new Hono<{ Bindings: Env }>()
+
+const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, '')
+
+const allowedOrigins = (env: Env): Set<string> => {
+  const configured = env.ALLOWED_ORIGINS
+    ?.split(',')
+    .map(normalizeOrigin)
+    .filter(Boolean)
+
+  return new Set(
+    configured?.length
+      ? configured
+      : ['https://testagram.site', 'https://www.testagram.site'],
+  )
+}
+
+const isAllowedOrigin = (origin: string | undefined, env: Env): boolean => {
+  if (!origin) return false
+  return allowedOrigins(env).has(normalizeOrigin(origin))
+}
+
+app.use(
+  '*',
+  cors({
+    origin: (origin, c) =>
+      isAllowedOrigin(origin, c.env) ? origin : '',
+    allowMethods: ['GET', 'POST', 'OPTIONS'],
+    allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Request-ID'],
+    exposeHeaders: ['X-Request-ID'],
+    maxAge: 86400,
+  }),
+)
+
+app.options('*', (c) => c.body(null, 204))
+
+app.get('/health', (c) =>
+  c.json({
+    ok: true,
+    service: 'testagram-gateway',
+    upstream: c.env.SUPABASE_GATEWAY_URL ?? DEFAULT_GATEWAY_URL,
+  }),
+)
+
+app.all('/api/gateway', async (c) => {
+  const origin = c.req.header('Origin')
+  if (origin && !isAllowedOrigin(origin, c.env)) {
+    return c.json({ error: 'Origin not allowed' }, 403)
+  }
+
+  const upstream = c.env.SUPABASE_GATEWAY_URL ?? DEFAULT_GATEWAY_URL
+  let upstreamUrl: URL
 
   try {
-    const url = new URL(raw)
-    return url.href
+    upstreamUrl = new URL(upstream)
   } catch {
-    return null
-  }
-}
-
-const USAGE_TEXT = `Usage: /{url}
-Examples:
-  /http://example.com/
-  /example.com
-  /example.com:8080/path`
-
-app.all('/*', async (c) => {
-  const reqUrl = new URL(c.req.url)
-  const path = reqUrl.pathname.slice(1) + reqUrl.search
-
-  if (!path || path === '?') {
-    return c.text(USAGE_TEXT, 200)
+    return c.json({ error: 'Gateway upstream is misconfigured' }, 500)
   }
 
-  if (path === 'favicon.ico') {
-    return c.text('Not found', 404)
+  if (upstreamUrl.protocol !== 'https:') {
+    return c.json({ error: 'Gateway upstream must use HTTPS' }, 500)
   }
 
-  const targetUrl = constructUrl(path)
-
-  if (!targetUrl) {
-    return c.text('Invalid URL', 400)
+  if (c.req.method !== 'POST' && c.req.method !== 'GET') {
+    return c.json({ error: 'Method not allowed' }, 405)
   }
 
-  const parsed = new URL(targetUrl)
-  if (isPrivateIP(parsed.hostname)) {
-    return c.text('Forbidden: private/internal addresses are not allowed', 403)
+  const headers = new Headers(c.req.raw.headers)
+  headers.delete('host')
+  headers.delete('origin')
+  headers.delete('content-length')
+
+  // The browser's request contract is already the gateway-relay contract.
+  // Forward it unchanged instead of turning this Worker into a second
+  // federation implementation.
+  const body = c.req.method === 'GET' ? undefined : c.req.raw.body
+
+  if (c.env.GATEWAY_SHARED_SECRET) {
+    headers.set('X-Testagram-Gateway-Secret', c.env.GATEWAY_SHARED_SECRET)
   }
 
   try {
-    const reqHeaders = new Headers(c.req.raw.headers)
-    reqHeaders.delete('host')
-
-    const response = await fetch(targetUrl, {
+    const response = await fetch(upstreamUrl, {
       method: c.req.method,
-      headers: reqHeaders,
-      body: c.req.raw.body,
+      headers,
+      body,
     })
 
-    const headers = new Headers(response.headers)
-    headers.set('Access-Control-Allow-Origin', '*')
+    const responseHeaders = new Headers(response.headers)
+    responseHeaders.delete('set-cookie')
 
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
-      headers,
+      headers: responseHeaders,
     })
-  } catch {
-    return c.text('Error fetching target URL', 500)
+  } catch (error) {
+    console.error('gateway upstream request failed', error)
+    return c.json({ error: 'Gateway upstream unavailable' }, 502)
   }
 })
+
+app.all('*', (c) => c.json({ error: 'Not found' }, 404))
 
 export default app
