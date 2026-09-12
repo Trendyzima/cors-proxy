@@ -1,55 +1,75 @@
-# CORS Anywhere with Hono and Cloudflare Workers
+# Testagram Gateway
 
-A CORS Anywhere proxy using the [Hono](https://github.com/honojs/hono) framework, deployed on [Cloudflare Workers](https://workers.cloudflare.com/).
+A locked-down Cloudflare Worker gateway for Testagram's browser-to-Supabase federation relay.
 
-## Features
+## Purpose
 
-- Proxy requests to bypass CORS restrictions
-- Handles URLs passed directly in the path (with query string support)
-- Supports both HTTP and HTTPS
-- SSRF protection — blocks private/internal IP ranges and cloud metadata endpoints
-- Proper URL parsing via `URL` constructor
-- Shows usage instructions when accessed without a URL
+The production Testagram frontend calls:
 
-## Installation
+`https://api.testagram.site/api/gateway`
 
-1. **Clone the repository**:
+This Worker provides that public edge endpoint and forwards the request to the existing Supabase `gateway-relay` function. It is **not** a general-purpose CORS proxy and does not implement ActivityPub itself.
 
-    ```bash
-    git clone https://github.com/7a6163/cors-proxy
-    cd cors-proxy
-    ```
+## Request flow
 
-2. **Install dependencies**:
+```text
+Testagram browser
+      |
+      | POST /api/gateway
+      v
+Cloudflare Worker
+      |
+      | server-side HTTPS fetch
+      v
+Supabase gateway-relay
+      |
+      v
+Testagram Federation
+```
 
-    ```bash
-    npm install
-    ```
+## Security boundaries
 
-3. **Development**:
+- Only `POST /api/gateway` is proxied.
+- The upstream is fixed by `SUPABASE_GATEWAY_URL`.
+- The upstream must use HTTPS.
+- Browser origins are restricted by `ALLOWED_ORIGINS`.
+- `Authorization`, `Content-Type`, `Accept`, and `X-Request-ID` are forwarded.
+- `Origin`, `Host`, and `Content-Length` are not forwarded upstream.
+- `Set-Cookie` is removed from upstream responses.
+- No arbitrary target URL is accepted from the browser.
+- ActivityPub signing, authentication, delivery, retries, and federation state remain in the existing Testagram backend.
 
-    ```bash
-    npm run dev
-    ```
+## Configuration
 
-4. **Deploy to Cloudflare Workers**:
+`wrangler.toml` contains the non-secret production routing configuration:
 
-    ```bash
-    npm run deploy
-    ```
+- `SUPABASE_GATEWAY_URL`
+- `ALLOWED_ORIGINS`
 
-## Usage
+## Local verification
 
-Once deployed, pass the target URL directly in the path.
+```bash
+npm ci
+npm run typecheck
+npm run dev
+```
 
-### Examples
+Health check:
 
-- `https://your-worker.workers.dev/http://example.com/` — Proxies with CORS headers
-- `https://your-worker.workers.dev/example.com` — Defaults to HTTPS
-- `https://your-worker.workers.dev/example.com:8080/path` — Custom port
-- `https://your-worker.workers.dev/example.com/api?key=123` — Query strings preserved
-- `https://your-worker.workers.dev/` — Shows usage text
+`GET /health`
 
-## License
+Gateway endpoint:
 
-This project is licensed under the MIT License.
+`POST /api/gateway`
+
+The gateway body is the existing Testagram gateway envelope and is forwarded without rewriting.
+
+## Deployment
+
+Deploy with:
+
+```bash
+npm run deploy
+```
+
+The DNS/custom-domain route for `api.testagram.site` must point to this Worker separately. This repository does not claim or perform DNS configuration.
