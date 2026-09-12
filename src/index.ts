@@ -4,7 +4,6 @@ import { cors } from 'hono/cors'
 interface Env {
   SUPABASE_GATEWAY_URL?: string
   ALLOWED_ORIGINS?: string
-  GATEWAY_SHARED_SECRET?: string
 }
 
 const DEFAULT_GATEWAY_URL =
@@ -36,8 +35,8 @@ app.use(
   '*',
   cors({
     origin: (origin, c) =>
-      isAllowedOrigin(origin, c.env) ? origin : '',
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
+      isAllowedOrigin(origin, c.env) ? origin : undefined,
+    allowMethods: ['POST', 'OPTIONS'],
     allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Request-ID'],
     exposeHeaders: ['X-Request-ID'],
     maxAge: 86400,
@@ -50,11 +49,10 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'testagram-gateway',
-    upstream: c.env.SUPABASE_GATEWAY_URL ?? DEFAULT_GATEWAY_URL,
   }),
 )
 
-app.all('/api/gateway', async (c) => {
+app.post('/api/gateway', async (c) => {
   const origin = c.req.header('Origin')
   if (origin && !isAllowedOrigin(origin, c.env)) {
     return c.json({ error: 'Origin not allowed' }, 403)
@@ -73,10 +71,6 @@ app.all('/api/gateway', async (c) => {
     return c.json({ error: 'Gateway upstream must use HTTPS' }, 500)
   }
 
-  if (c.req.method !== 'POST' && c.req.method !== 'GET') {
-    return c.json({ error: 'Method not allowed' }, 405)
-  }
-
   const headers = new Headers(c.req.raw.headers)
   headers.delete('host')
   headers.delete('origin')
@@ -85,17 +79,11 @@ app.all('/api/gateway', async (c) => {
   // The browser's request contract is already the gateway-relay contract.
   // Forward it unchanged instead of turning this Worker into a second
   // federation implementation.
-  const body = c.req.method === 'GET' ? undefined : c.req.raw.body
-
-  if (c.env.GATEWAY_SHARED_SECRET) {
-    headers.set('X-Testagram-Gateway-Secret', c.env.GATEWAY_SHARED_SECRET)
-  }
-
   try {
     const response = await fetch(upstreamUrl, {
-      method: c.req.method,
+      method: 'POST',
       headers,
-      body,
+      body: c.req.raw.body,
     })
 
     const responseHeaders = new Headers(response.headers)
